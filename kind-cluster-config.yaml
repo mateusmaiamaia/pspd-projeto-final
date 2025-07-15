@@ -1,0 +1,7 @@
+# Arquivo de configuração para um cluster kind com 1 nó de controle e 2 nós de trabalho
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane # Este é o nó mestre
+- role: worker        # Este é o primeiro nó de trabalho (escravo)
+- role: worker        # Este é o segundo nó de trabalho (escravo)
