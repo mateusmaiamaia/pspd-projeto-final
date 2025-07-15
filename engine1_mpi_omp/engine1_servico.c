@@ -7,6 +7,8 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <time.h> // MODIFICAÇÃO: Incluído para obter o timestamp
+#include <curl/curl.h>
 
 #define ind2d(i,j) (i)*(tam+2)+j
 #define POWMIN 3
@@ -60,7 +62,42 @@ int Correto(int* tabul, int tam) {
 }
 
 
-// NOVO: A função main foi completamente reestruturada
+// MODIFICAÇÃO: Nova função para enviar dados para o Elasticsearch
+void enviar_metricas(int tam, int cpus, int threads, double t_init, double t_comp, double t_fim, double t_total) {
+    CURL *curl;
+    CURLcode res;
+
+    curl_global_init(CURL_GLOBAL_ALL);
+    curl = curl_easy_init();
+    if(curl) {
+        char post_data[512];
+        // Formata os dados em uma string JSON
+        sprintf(post_data, "{\"engine\":\"c_mpi_omp\", \"tam\":%d, \"cpus\":%d, \"threads_per_cpu\":%d, \"time_init\":%.7f, \"time_comp\":%.7f, \"time_final\":%.7f, \"time_total\":%.7f, \"@timestamp\":%ld000}",
+                tam, cpus, threads, t_init, t_comp, t_fim, t_total, time(NULL));
+
+        struct curl_slist *headers = NULL;
+        headers = curl_slist_append(headers, "Content-Type: application/json");
+
+        // URL do Elasticsearch: http://host:porta/nome_do_indice/_doc
+        curl_easy_setopt(curl, CURLOPT_URL, "http://localhost:9200/pspd-metrics/_doc");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
+
+        // Executa a requisição HTTP POST
+        res = curl_easy_perform(curl);
+        if(res != CURLE_OK) {
+            fprintf(stderr, "[Rank 0] Erro ao enviar dados para o Elasticsearch: %s\n", curl_easy_strerror(res));
+        } else {
+            printf("[Rank 0] Métricas enviadas para o Elasticsearch com sucesso.\n");
+        }
+        
+        curl_easy_cleanup(curl);
+        curl_slist_free_all(headers);
+    }
+    curl_global_cleanup();
+}
+
+
 int main(int argc, char *argv[]) {
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
@@ -69,19 +106,19 @@ int main(int argc, char *argv[]) {
     int server_fd, new_socket;
     struct sockaddr_in address;
     int addrlen = sizeof(address);
-    int port = 8080; // Porta onde a engine vai escutar
+    int port = 8080; 
 
-    // NOVO: Bloco de configuração do servidor TCP (executado apenas pelo processo 0)
     if (world_rank == 0) {
-        // 1. Cria o descritor do socket
         if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
             perror("socket failed");
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
         
-        // 2. Vincula o socket à porta e endereço
+        int opt = 1;
+        setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt));
+
         address.sin_family = AF_INET;
-        address.sin_addr.s_addr = INADDR_ANY; // Escuta em qualquer endereço de rede da máquina
+        address.sin_addr.s_addr = INADDR_ANY;
         address.sin_port = htons(port);
         
         if (bind(server_fd, (struct sockaddr *)&address, sizeof(address))<0) {
@@ -89,7 +126,6 @@ int main(int argc, char *argv[]) {
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
 
-        // 3. Coloca o socket em modo de escuta por conexões
         if (listen(server_fd, 3) < 0) {
             perror("listen");
             MPI_Abort(MPI_COMM_WORLD, 1);
@@ -97,40 +133,32 @@ int main(int argc, char *argv[]) {
         printf("Engine 1 (MPI+OpenMP) pronta e escutando na porta %d\n", port);
     }
 
-    // NOVO: Loop principal do serviço
     while (1) {
         int pow = 0;
 
-        // NOVO: O processo 0 espera por uma conexão, recebe a tarefa e a distribui
         if (world_rank == 0) {
             printf("[Rank 0] Aguardando nova conexão...\n");
-            // 4. Aceita uma nova conexão (bloqueante)
             if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen))<0) {
                 perror("accept");
-                continue; // Em caso de erro, apenas tenta aceitar a próxima
+                continue; 
             }
-            // 5. Lê os dados (o valor de `pow`) da conexão
             read(new_socket, &pow, sizeof(pow));
             printf("[Rank 0] Conexão recebida. Tarefa: POW = %d\n", pow);
-            close(new_socket); // Fecha a conexão do cliente
+            close(new_socket);
         }
 
-        // 6. O processo 0 transmite a tarefa (pow) para todos os outros processos MPI
         MPI_Bcast(&pow, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-        // Se pow for negativo, encerra o serviço
         if (pow < 0) {
             if(world_rank == 0) printf("Sinal de término recebido. Encerrando engine...\n");
             break; 
         }
         
-        // Validação básica da tarefa
         if (pow < POWMIN || pow > POWMAX) {
             if(world_rank == 0) fprintf(stderr, "Tarefa com POW=%d inválida.\n", pow);
             continue;
         }
 
-        // --- INÍCIO DA LÓGICA DO JOGO DA VIDA (A MESMA DE ANTES) ---
         int tam = 1 << pow;
         int generations = 4 * (tam - 3);
 
@@ -213,14 +241,16 @@ int main(int argc, char *argv[]) {
 
             printf("[Rank 0] Métricas: tam=%d; cpus=%d; threads/cpu=%d; tempos: init=%7.7f, comp=%7.7f, fim=%7.7f, tot=%7.7f \n",
                    tam, world_size, omp_get_max_threads(), t_init, t_comp, t_final, t_total);
-            // NO FUTURO: Aqui você enviaria essas métricas para o Elasticsearch em vez de imprimir.
+            
+            // MODIFICAÇÃO: Chamada para a nova função de envio de métricas
+            enviar_metricas(tam, world_size, omp_get_max_threads(), t_init, t_comp, t_final, t_total);
+
             free(gather_buffer);
         }
 
         free(tabulIn);
         free(tabulOut);
         free(final_grid_local);
-        // --- FIM DA LÓGICA DO JOGO DA VIDA ---
     }
     
     if(world_rank == 0) close(server_fd);

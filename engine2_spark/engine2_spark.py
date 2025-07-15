@@ -26,22 +26,24 @@ def run_spark_engine(pow_value):
     start_time = time.time()
     
     for gen in range(generations):
-        # Passo 1: Encontra e conta os vizinhos de todas as células vivas
+        # Lógica de cálculo otimizada
         neighbor_counts_rdd = live_cells_rdd.flatMap(get_neighbors).reduceByKey(lambda a, b: a + b)
-
-        # Passo 2: Calcula as células que vão nascer
-        # Filtra apenas os vizinhos com contagem 3 (regra do nascimento)
-        # O 'subtractByKey' remove as células que já estão vivas, garantindo que só células mortas possam nascer.
         births_rdd = neighbor_counts_rdd.filter(lambda item: item[1] == 3).subtractByKey(live_cells_rdd.map(lambda c: (c, 1)))
-        
-        # Passo 3: Calcula as células que vão sobreviver
-        # Faz um 'join' para ter acesso à contagem de vizinhos das células vivas
         survivors_rdd = live_cells_rdd.map(lambda c: (c, 1)).join(neighbor_counts_rdd).filter(lambda item: item[1][1] in [2, 3])
-        
-        # Passo 4: A nova geração é a união de quem sobreviveu e quem nasceu
-        # O '.map(_[0])' serve para pegar apenas a coordenada (a chave) de cada RDD
         live_cells_rdd = survivors_rdd.map(lambda item: item[0]).union(births_rdd.map(lambda item: item[0]))
 
+        # --- OTIMIZAÇÃO ESSENCIAL COM CACHE ---
+        # A cada 50 gerações, materializamos o RDD em memória para quebrar a
+        # longa cadeia de dependências, liberando memória.
+        if (gen + 1) % 50 == 0:
+            live_cells_rdd.cache()
+            
+            # Uma ação como 'count' é necessária para forçar a execução e o cache.
+            # Também serve como um ótimo indicador de progresso durante a execução longa.
+            num_cells = live_cells_rdd.count()
+            print(f"  Checkpoint da Geração {gen + 1}/{generations}: {num_cells} células vivas.")
+
+    # Ação final para forçar a computação e medir o tempo
     final_live_count = live_cells_rdd.count()
     end_time = time.time()
     
@@ -65,7 +67,7 @@ if __name__ == "__main__":
     
     try:
         pow_val = int(sys.argv[1])
-        if not (3 <= pow_val <= 16): # Aumentei o limite para o seu teste
+        if not (3 <= pow_val <= 16):
              raise ValueError("O valor de 'pow' deve estar entre 3 e 16.")
         run_spark_engine(pow_val)
     except ValueError as e:
