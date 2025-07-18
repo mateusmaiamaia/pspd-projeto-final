@@ -1,0 +1,39 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: socket-server-deployment
+spec:
+  replicas: 1 # Para testes de elasticidade, podemos aumentar este número depois
+  selector:
+    matchLabels:
+      app: socket-server
+  template:
+    metadata:
+      labels:
+        app: socket-server
+    spec:
+      containers:
+      - name: socket-server-container
+        image: pspd/socket-server:1.0
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 5000
+        env:
+        # Aqui, dizemos ao Socket Server para encontrar a Engine 1
+        # usando o nome do serviço que criamos acima.
+        - name: ENGINE1_HOST
+          value: "engine1-service"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: socket-server-service
+spec:
+  type: NodePort # Expõe este serviço para fora do cluster
+  selector:
+    app: socket-server
+  ports:
+    - protocol: TCP
+      port: 5000       # Porta interna do contêiner
+      targetPort: 5000 # Porta do pod
+      nodePort: 30000  # Porta externa que usaremos para nos conectar
