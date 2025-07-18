@@ -5,14 +5,16 @@ FROM python:3.12-slim
 WORKDIR /app
 
 # Copia o arquivo de dependências para o contêiner
-# O 'COPY ../requirements.txt' sobe um nível para encontrar o arquivo na raiz do projeto
-COPY ../requirements.txt .
+COPY requirements.txt .
 
 # Instala as dependências Python
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copia o código do nosso servidor para o contêiner
 COPY socket_server/main_socket_server.py .
+
+# MODIFICAÇÃO AQUI: Copia a pasta de templates para dentro do contêiner
+COPY socket_server/templates /app/templates
 
 # Expõe a porta 5000, que o servidor usa
 EXPOSE 5000

@@ -98,6 +98,7 @@ void enviar_metricas(int tam, int cpus, int threads, double t_init, double t_com
 }
 
 
+// Substitua sua função main por esta
 int main(int argc, char *argv[]) {
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
@@ -116,7 +117,6 @@ int main(int argc, char *argv[]) {
         
         int opt = 1;
         setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt));
-
         address.sin_family = AF_INET;
         address.sin_addr.s_addr = INADDR_ANY;
         address.sin_port = htons(port);
@@ -144,24 +144,29 @@ int main(int argc, char *argv[]) {
             }
             read(new_socket, &pow, sizeof(pow));
             printf("[Rank 0] Conexão recebida. Tarefa: POW = %d\n", pow);
-            close(new_socket);
+            // NÃO FECHE O SOCKET AINDA, VAMOS USÁ-LO PARA RESPONDER
         }
 
         MPI_Bcast(&pow, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
         if (pow < 0) {
-            if(world_rank == 0) printf("Sinal de término recebido. Encerrando engine...\n");
+            if(world_rank == 0) close(new_socket); // Fecha o socket antes de sair
             break; 
         }
         
         if (pow < POWMIN || pow > POWMAX) {
-            if(world_rank == 0) fprintf(stderr, "Tarefa com POW=%d inválida.\n", pow);
+            if(world_rank == 0) {
+                char error_msg[100];
+                sprintf(error_msg, "Erro: Tarefa com POW=%d invalida.", pow);
+                write(new_socket, error_msg, strlen(error_msg)); // Envia erro de volta
+                close(new_socket);
+                fprintf(stderr, "%s\n", error_msg);
+            }
             continue;
         }
 
         int tam = 1 << pow;
         int generations = 4 * (tam - 3);
-
         int rows_per_proc = tam / world_size;
         int start_row = 1 + world_rank * rows_per_proc;
         int end_row = start_row + rows_per_proc - 1;
@@ -170,7 +175,6 @@ int main(int argc, char *argv[]) {
         int *tabulIn = (int*) malloc((tam+2)*(tam+2)*sizeof(int));
         int *tabulOut = (int*) malloc((tam+2)*(tam+2)*sizeof(int));
         int *final_grid_local = (int*) malloc((tam+2)*(tam+2)*sizeof(int));
-
         double t_start, t_comp_start, t_comp_end, t_end;
 
         if(world_rank == 0) t_start = wall_time();
@@ -184,11 +188,11 @@ int main(int argc, char *argv[]) {
             int* current_in = (i%2 == 0) ? tabulIn : tabulOut;
             int* current_out = (i%2 == 0) ? tabulOut : tabulIn;
             UmaVida(current_in, current_out, tam, start_row, end_row);
-            
+            MPI_Barrier(MPI_COMM_WORLD); // Sincroniza após o cálculo
+            // ... (bloco do halo exchange, sem alterações) ...
             MPI_Request reqs[4] = {MPI_REQUEST_NULL, MPI_REQUEST_NULL, MPI_REQUEST_NULL, MPI_REQUEST_NULL};
             MPI_Status statuses[4];
             int req_count = 0;
-
             if (world_rank > 0) {
                 MPI_Isend(&current_out[ind2d(start_row, 0)], tam+2, MPI_INT, world_rank-1, TAG_UP, MPI_COMM_WORLD, &reqs[req_count++]);
                 MPI_Irecv(&current_out[ind2d(start_row-1, 0)], tam+2, MPI_INT, world_rank-1, TAG_DOWN, MPI_COMM_WORLD, &reqs[req_count++]);
@@ -198,7 +202,6 @@ int main(int argc, char *argv[]) {
                 MPI_Irecv(&current_out[ind2d(end_row+1, 0)], tam+2, MPI_INT, world_rank+1, TAG_UP, MPI_COMM_WORLD, &reqs[req_count++]);
             }
             MPI_Waitall(req_count, reqs, statuses);
-            MPI_Barrier(MPI_COMM_WORLD);
         }
         
         int* final_ptr = (generations%2 == 0) ? tabulIn : tabulOut;
@@ -213,39 +216,36 @@ int main(int argc, char *argv[]) {
              memset(gather_buffer, 0, (tam+2)*(tam+2)*sizeof(int));
         }
 
+        // ... (bloco do Gatherv, sem alterações) ...
         int *recvcounts = (int*)malloc(world_size*sizeof(int));
         int *displs = (int*)malloc(world_size*sizeof(int));
         for(int p=0; p<world_size; ++p){
-            int p_rows = tam/world_size;
-            int p_start_row = 1 + p*p_rows;
-            int p_end_row = p_start_row+p_rows-1;
-            if(p == world_size-1) p_end_row = tam;
+            int p_rows = tam/world_size; int p_start_row = 1 + p*p_rows; int p_end_row = p_start_row+p_rows-1; if(p == world_size-1) p_end_row = tam;
             recvcounts[p] = (p_end_row-p_start_row+1)*(tam+2);
             displs[p] = ind2d(p_start_row, 0);
         }
-
-        MPI_Gatherv(&final_grid_local[ind2d(start_row,0)], recvcounts[world_rank], MPI_INT, 
-                    gather_buffer, recvcounts, displs, MPI_INT, 0, MPI_COMM_WORLD);
-        
+        MPI_Gatherv(&final_grid_local[ind2d(start_row,0)], recvcounts[world_rank], MPI_INT, gather_buffer, recvcounts, displs, MPI_INT, 0, MPI_COMM_WORLD);
         free(recvcounts); free(displs);
 
         if (world_rank == 0) {
-            t_end = wall_time();
-            if (Correto(gather_buffer, tam)) printf("[Rank 0] Resultado da tarefa: CORRETO\n");
-            else printf("[Rank 0] Resultado da tarefa: ERRADO\n");
-            
-            double t_init = t_comp_start - t_start;
+            char response_str[256];
+            const char* result_text = Correto(gather_buffer, tam) ? "CORRETO" : "ERRADO";
             double t_comp = t_comp_end - t_comp_start;
-            double t_final = t_end - t_comp_end;
-            double t_total = t_end - t_start;
 
-            printf("[Rank 0] Métricas: tam=%d; cpus=%d; threads/cpu=%d; tempos: init=%7.7f, comp=%7.7f, fim=%7.7f, tot=%7.7f \n",
-                   tam, world_size, omp_get_max_threads(), t_init, t_comp, t_final, t_total);
+            // Cria a string de resposta
+            sprintf(response_str, "Resultado: %s. Tempo de Computacao: %.4f segundos.", result_text, t_comp);
             
-            // MODIFICAÇÃO: Chamada para a nova função de envio de métricas
-            enviar_metricas(tam, world_size, omp_get_max_threads(), t_init, t_comp, t_final, t_total);
+            // MODIFICAÇÃO: Envia a resposta de volta pelo socket
+            write(new_socket, response_str, strlen(response_str));
+            printf("[Rank 0] Resposta enviada para o Socket Server.\n");
 
+            double t_total = wall_time() - t_start;
+            // (a lógica de enviar métricas para o elasticsearch pode continuar aqui)
             free(gather_buffer);
+        }
+        
+        if (world_rank == 0) {
+            close(new_socket); // Fecha a conexão com o cliente
         }
 
         free(tabulIn);

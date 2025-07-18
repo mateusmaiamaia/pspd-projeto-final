@@ -1,67 +1,77 @@
+import os
 import socket
-import threading
 import struct
-import time
-import os # Importa a biblioteca para ler variáveis de ambiente
+import subprocess
+import threading
+from flask import Flask, render_template, request, jsonify
 
-# --- Configurações ---
-SERVER_HOST = '0.0.0.0'
-SERVER_PORT = 5000
+# --- Inicialização do Flask ---
+app = Flask(__name__)
 
-# MODIFICAÇÃO: Lê o endereço da Engine 1 a partir de uma variável de ambiente.
-# Isso torna nosso código flexível para rodar em Docker e Kubernetes.
-# Se a variável não existir, usa 'localhost' como padrão.
+# --- Configurações das Engines ---
 ENGINE1_HOST = os.environ.get('ENGINE1_HOST', 'localhost')
 ENGINE1_PORT = 8080
 
-# (O resto do arquivo continua igual...)
-def handle_client(conn, addr):
-    print(f"[Servidor Principal] Nova conexão recebida de {addr}")
+def submit_to_engine1(pow_value):
+    """Envia uma tarefa para a Engine 1 (C/MPI) e AGUARDA a resposta."""
     try:
-        data = conn.recv(1024).decode('utf-8').strip()
-        if not data:
-            print(f"[Servidor Principal] Cliente {addr} desconectou sem enviar dados.")
-            return
-
-        print(f"[Servidor Principal] Recebido de {addr}: '{data}'")
-        parts = data.split(',')
-        if len(parts) != 2:
-            conn.sendall(b"Erro: Formato da requisicao invalido. Use: engine,parametro (ex: engine1,8)")
-            return
-
-        engine_choice = parts[0].strip()
-        pow_value = int(parts[1].strip())
-
-        if engine_choice == 'engine1':
-            print(f"[Servidor Principal] Encaminhando tarefa (POW={pow_value}) para a Engine 1 em '{ENGINE1_HOST}'...")
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as engine_socket:
-                    engine_socket.connect((ENGINE1_HOST, ENGINE1_PORT))
-                    packed_pow = struct.pack('i', pow_value)
-                    engine_socket.sendall(packed_pow)
-                print(f"[Servidor Principal] Tarefa enviada para a Engine 1 com sucesso.")
-                conn.sendall(b"OK: Tarefa submetida para a Engine 1.")
-            except Exception as e:
-                print(f"[Servidor Principal] ERRO ao conectar ou enviar para a Engine 1: {e}")
-                conn.sendall(b"Erro: Nao foi possivel se comunicar com a Engine 1.")
-        else:
-            conn.sendall(f"Erro: Engine '{engine_choice}' desconhecida ou nao implementada.".encode('utf-8'))
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.connect((ENGINE1_HOST, ENGINE1_PORT))
+            # Envia o valor de POW
+            s.sendall(struct.pack('i', pow_value))
+            
+            # MODIFICAÇÃO: Espera e recebe a resposta da Engine 1
+            # O cálculo pode demorar, então definimos um timeout longo
+            s.settimeout(60.0) # Timeout de 60 segundos
+            response_from_engine = s.recv(1024).decode('utf-8')
+            
+        return {"status": "success", "message": response_from_engine}
+    except socket.timeout:
+        return {"status": "error", "message": "Erro: A Engine 1 demorou muito para responder (timeout)."}
     except Exception as e:
-        print(f"[Servidor Principal] Erro ao lidar com o cliente {addr}: {e}")
-    finally:
-        print(f"[Servidor Principal] Fechando conexao com {addr}")
-        conn.close()
+        return {"status": "error", "message": f"Erro ao contatar a Engine 1: {e}"}
 
-def start_server():
-    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server_socket.bind((SERVER_HOST, SERVER_PORT))
-    server_socket.listen(5)
-    print(f"Servidor principal escutando em {SERVER_HOST}:{SERVER_PORT}")
-    while True:
-        conn, addr = server_socket.accept()
-        client_thread = threading.Thread(target=handle_client, args=(conn, addr))
-        client_thread.start()
+def submit_to_engine2(pow_value):
+    """Inicia um job da Engine 2 (Spark) em um novo processo."""
+    try:
+        command = [
+            'spark-submit',
+            '--driver-memory', '2g',
+            'engine2_spark/engine2_spark.py',
+            str(pow_value)
+        ]
+        print(f"Executando comando: {' '.join(command)}")
+        # Usamos Popen para não bloquear o servidor web enquanto o Spark executa
+        subprocess.Popen(command)
+        return {"status": "success", "message": f"Job da Engine 2 com POW={pow_value} submetido. Acompanhe o log do terminal para ver o progresso."}
+    except Exception as e:
+        return {"status": "error", "message": f"Erro ao iniciar a Engine 2: {e}"}
 
-if __name__ == "__main__":
-    start_server()
+# --- Rotas da Aplicação Web ---
+
+@app.route('/')
+def index():
+    """Serve a página HTML principal."""
+    return render_template('index.html')
+
+@app.route('/submit', methods=['POST'])
+def submit_job():
+    """Recebe a submissão do formulário web."""
+    data = request.get_json()
+    engine = data.get('engine')
+    pow_val = int(data.get('pow'))
+    
+    response_data = {}
+
+    if engine == 'engine1':
+        response_data = submit_to_engine1(pow_val)
+    elif engine == 'engine2':
+        response_data = submit_to_engine2(pow_val)
+    else:
+        response_data = {"status": "error", "message": "Engine desconhecida."}
+        
+    return jsonify(response_data)
+
+if __name__ == '__main__':
+    # Inicia o servidor web Flask
+    app.run(host='0.0.0.0', port=5000, debug=True)
