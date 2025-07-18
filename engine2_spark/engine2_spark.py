@@ -1,10 +1,50 @@
 import time
 import sys
+# NOVOS IMPORTS para a integração com Elasticsearch
+import requests
+import json
+from datetime import datetime
+
 from pyspark.sql import SparkSession
 
+# NOVA FUNÇÃO para enviar métricas para o Elasticsearch
+def enviar_metricas_spark(tam, cpus, threads, t_comp):
+    """
+    Envia as métricas de performance da simulação para o Elasticsearch.
+    """
+    print("Enviando métricas para o Elasticsearch...")
+    # URL do serviço elasticsearch. Como o script roda fora do docker, usamos localhost.
+    url = "http://localhost:9200/pspd-metrics/_doc"
+    
+    # Cria um dicionário (JSON) com os dados
+    metricas = {
+        "engine": "apache_spark",
+        "tam": tam,
+        "cpus": cpus, # Em modo local, Spark usa os núcleos disponíveis
+        "threads_per_cpu": threads, # threads não é um conceito direto no Spark, usamos como placeholder
+        "time_init": 0, # O tempo de inicialização é medido no spark-submit, não aqui
+        "time_comp": t_comp,
+        "time_final": 0,
+        "time_total": t_comp,
+        "@timestamp": datetime.utcnow().isoformat() + 'Z' # Timestamp no formato correto
+    }
+    
+    headers = {
+        "Content-Type": "application/json"
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(metricas), timeout=5)
+        response.raise_for_status() # Lança um erro se a resposta não for bem-sucedida (status 2xx)
+        print("Métricas enviadas para o Elasticsearch com sucesso.")
+    except Exception as e:
+        print(f"Erro ao enviar dados para o Elasticsearch: {e}")
+
 def get_neighbors(cell):
+    """
+    Para uma célula viva (r, c), gera uma lista de suas 8 coordenadas vizinhas.
+    """
     r, c = cell
-    # Gera as 8 coordenadas vizinhas
     for i in range(-1, 2):
         for j in range(-1, 2):
             if i == 0 and j == 0:
@@ -18,7 +58,7 @@ def run_spark_engine(pow_value):
     spark = SparkSession.builder.appName(f"JogoDaVida_Spark_tam{tam}").getOrCreate()
     sc = spark.sparkContext
     
-    print(f"--- Iniciando Engine 2 (Spark Otimizado) para tam={tam}, {generations} gerações ---")
+    print(f"--- Iniciando Engine 2 (Spark Corrigido) para tam={tam}, {generations} gerações ---")
     
     initial_glider = [(1, 2), (2, 3), (3, 1), (3, 2), (3, 3)]
     live_cells_rdd = sc.parallelize(initial_glider)
@@ -32,18 +72,13 @@ def run_spark_engine(pow_value):
         survivors_rdd = live_cells_rdd.map(lambda c: (c, 1)).join(neighbor_counts_rdd).filter(lambda item: item[1][1] in [2, 3])
         live_cells_rdd = survivors_rdd.map(lambda item: item[0]).union(births_rdd.map(lambda item: item[0]))
 
-        # --- OTIMIZAÇÃO ESSENCIAL COM CACHE ---
-        # A cada 50 gerações, materializamos o RDD em memória para quebrar a
-        # longa cadeia de dependências, liberando memória.
+        # Otimização de cache para algoritmos iterativos
         if (gen + 1) % 50 == 0:
             live_cells_rdd.cache()
-            
-            # Uma ação como 'count' é necessária para forçar a execução e o cache.
-            # Também serve como um ótimo indicador de progresso durante a execução longa.
+            # Uma ação como 'count' força a materialização do cache
             num_cells = live_cells_rdd.count()
             print(f"  Checkpoint da Geração {gen + 1}/{generations}: {num_cells} células vivas.")
-
-    # Ação final para forçar a computação e medir o tempo
+    
     final_live_count = live_cells_rdd.count()
     end_time = time.time()
     
@@ -58,6 +93,9 @@ def run_spark_engine(pow_value):
     computation_time = end_time - start_time
     print(f"Tempo total de computação Spark: {computation_time:.7f} segundos")
     
+    # MODIFICAÇÃO: Chamada para a nova função de envio de métricas
+    enviar_metricas_spark(tam, sc.defaultParallelism, 1, computation_time)
+
     spark.stop()
 
 if __name__ == "__main__":

@@ -79,7 +79,7 @@ void enviar_metricas(int tam, int cpus, int threads, double t_init, double t_com
         headers = curl_slist_append(headers, "Content-Type: application/json");
 
         // URL do Elasticsearch: http://host:porta/nome_do_indice/_doc
-        curl_easy_setopt(curl, CURLOPT_URL, "http://localhost:9200/pspd-metrics/_doc");
+        curl_easy_setopt(curl, CURLOPT_URL, "http://elasticsearch:9200/pspd-metrics/_doc");
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data);
 

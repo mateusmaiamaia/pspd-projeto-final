@@ -2,28 +2,53 @@ version: '3.8'
 services:
   # Serviço do Elasticsearch (o banco de dados)
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.9.0 # Usando uma versão específica
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.9.0
     container_name: elasticsearch
     environment:
       - discovery.type=single-node
-      - xpack.security.enabled=false # Desabilita a segurança para facilitar o desenvolvimento local
+      - xpack.security.enabled=false
     ports:
-      - "9200:9200" # Porta da API REST para enviar dados
-      - "9201:9300"
+      - "9200:9200"
     networks:
-      - elastic
+      - pspd-net
 
   # Serviço do Kibana (a interface de visualização)
   kibana:
     image: docker.elastic.co/kibana/kibana:8.9.0
     container_name: kibana
     ports:
-      - "5601:5601" # Porta para acessar a interface web
-    depends_on:
+      - "5601:5601"
+    depends_on: # Diz ao Docker para esperar o elasticsearch estar pronto antes de iniciar o kibana
       - elasticsearch
     networks:
-      - elastic
+      - pspd-net
+  
+  # NOVO: Serviço da Engine 1 (C/MPI/OpenMP)
+  engine1:
+    image: pspd/engine1-mpi-omp:1.0 # Usa a imagem que acabamos de criar
+    container_name: engine1
+    depends_on:
+      - elasticsearch # Inicia somente depois que o banco de dados estiver pronto
+    networks:
+      - pspd-net
+    # Nota: A Engine 1 escuta na porta 8080, mas não precisamos expor essa porta
+    # para a nossa máquina local, pois apenas o Socket Server (outro contêiner) precisa falar com ela.
 
+  # NOVO: Serviço do Socket Server Principal (Python)
+  socket-server:
+    image: pspd/socket-server:1.0 # Usa a imagem que acabamos de criar
+    container_name: socket-server
+    ports:
+      - "5000:5000" # Expõe a porta 5000 para que possamos enviar tarefas do nosso terminal
+    depends_on:
+      - engine1 # Inicia somente depois que a Engine 1 estiver pronta
+    networks:
+      - pspd-net
+    environment:
+      # Diz ao servidor Python para se conectar à Engine 1 usando o nome do serviço
+      - ENGINE1_HOST=engine1 
+
+# Define uma rede customizada para que os contêineres possam se comunicar usando seus nomes
 networks:
-  elastic:
+  pspd-net:
     driver: bridge

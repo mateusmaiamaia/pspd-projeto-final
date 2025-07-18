@@ -1,0 +1,38 @@
+Iniciando a coleta de dados de performance para a Engine 1...
+Os resultados serão salvos em engine1_collection.log
+sex 18 jul 2025 09:24:16 -03
+
+------------------------------------------
+>> Enviando tarefa para POW = 3
+------------------------------------------
+OK: Tarefa submetida para a Engine 1.
+------------------------------------------
+>> Enviando tarefa para POW = 4
+------------------------------------------
+OK: Tarefa submetida para a Engine 1.
+------------------------------------------
+>> Enviando tarefa para POW = 5
+------------------------------------------
+OK: Tarefa submetida para a Engine 1.
+------------------------------------------
+>> Enviando tarefa para POW = 6
+------------------------------------------
+OK: Tarefa submetida para a Engine 1.
+------------------------------------------
+>> Enviando tarefa para POW = 7
+------------------------------------------
+OK: Tarefa submetida para a Engine 1.
+------------------------------------------
+>> Enviando tarefa para POW = 8
+------------------------------------------
+OK: Tarefa submetida para a Engine 1.
+------------------------------------------
+>> Enviando tarefa para POW = 9
+------------------------------------------
+OK: Tarefa submetida para a Engine 1.
+------------------------------------------
+>> Enviando tarefa para POW = 10
+------------------------------------------
+OK: Tarefa submetida para a Engine 1.
+✅ Coleta de dados concluída!
+Verifique seu dashboard no Kibana para ver os resultados.
